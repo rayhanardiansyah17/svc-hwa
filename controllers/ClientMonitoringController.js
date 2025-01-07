@@ -86,37 +86,37 @@ const ClientMonitoringController = {
       }
     },
 
-    MonitorClient: async (req, res) => {
-        try {
-          let { client_id } = req.body;
+    // MonitorClient: async (req, res) => {
+    //     try {
+    //       let { client_id } = req.body;
     
-          const clientQuery = `
-            SELECT 
-              hc.client_id,
-              hc.allocated_modem_sn,
-              hc.msisdn,
-              hc.status,
-              hc.allocated_package,
-              hc.termination_date,
-              p.product_name as active_package
-            FROM 
-              hwa_clients hc
-            LEFT JOIN 
-              products p ON hc.allocated_package = p.id
-            WHERE 
-              hc.client_id = ?
-          `;
-          let clientResult = await mysqlHelpers.query(db, clientQuery, [client_id]);
-          if (clientResult.length === 0) throw "Client Not Found";
+    //       const clientQuery = `
+    //         SELECT 
+    //           hc.client_id,
+    //           hc.allocated_modem_sn,
+    //           hc.msisdn,
+    //           hc.status,
+    //           hc.allocated_package,
+    //           hc.termination_date,
+    //           p.product_name as active_package
+    //         FROM 
+    //           hwa_clients hc
+    //         LEFT JOIN 
+    //           products p ON hc.allocated_package = p.id
+    //         WHERE 
+    //           hc.client_id = ?
+    //       `;
+    //       let clientResult = await mysqlHelpers.query(db, clientQuery, [client_id]);
+    //       if (clientResult.length === 0) throw "Client Not Found";
     
-          const client = clientResult[0];
+    //       const client = clientResult[0];
     
-          res.status(200).json(ResponseGenerator.Success("Operation Success", client));
-        } catch (error) {
-          console.warn("error :", error);
-          res.status(400).json(ResponseGenerator.Error(error.toString(), error));
-        }
-      },
+    //       res.status(200).json(ResponseGenerator.Success("Operation Success", client));
+    //     } catch (error) {
+    //       console.warn("error :", error);
+    //       res.status(400).json(ResponseGenerator.Error(error.toString(), error));
+    //     }
+    //   },
 }
 
 module.exports = ClientMonitoringController;

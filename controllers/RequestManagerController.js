@@ -30,13 +30,12 @@ const RequestManagerController = {
         sub,
         suco,
         aldeia,
+        coverage_status,
         email,
         msisdn,
         msisdn_alternatif,
         product,
-        initial_paket,
-        visitation_schedule_date,
-        visitation_schedule_time_slot,
+        initial_paket
       } = req.body;
 
       // Validate input
@@ -51,13 +50,12 @@ const RequestManagerController = {
         sub,
         suco,
         aldeia,
+        coverage_status,
         email,
         msisdn,
         msisdn_alternatif,
         product,
-        initial_paket,
-        visitation_schedule_date,
-        visitation_schedule_time_slot,
+        initial_paket
       });
 
       res.status(200).json(ResponseGenerator.Success("Request Created Successfully", request));
@@ -141,9 +139,7 @@ const RequestManagerController = {
 
       let allocation = await RequestManagerModel.allocateProducts(request_id);
 
-      let client = await RequestManagerModel.clientData(request_id);
-
-      res.status(200).json(ResponseGenerator.Success("Request Approved and Products Allocated", { allocation, client }));
+      res.status(200).json(ResponseGenerator.Success("Request Approved and Products Allocated", { allocation}));
     } catch (error) {
       console.warn("error :", error);
       res.status(400).json(ResponseGenerator.Error(error.toString(), error));
@@ -196,12 +192,12 @@ const RequestManagerController = {
     }
   },
 
-  ConfirmSchedule: async (req, res) => {
+  AssignSchedule: async (req, res) => {
     try {
-      const { request_id } = req.body;
+      const { request_id, schedule_date, time_slot } = req.body;
   
-      if (!request_id) {
-        throw "Request ID is required";
+      if (!request_id || !schedule_date || !time_slot) {
+        throw "Request ID, Schedule Date, and Time Slot are required";
       }
   
       const request = await RequestManagerModel.getById(request_id).then(({ rows }) => rows[0]);
@@ -209,16 +205,16 @@ const RequestManagerController = {
         throw "Request not found";
       }
   
-      if (!request.visitation_schedule_date || !request.visitation_schedule_time_slot) {
-        throw "Visitation schedule is not set for this request";
+      if (request.status !== 'ASSIGNED') {
+        throw "Request status must be 'ASSIGNED' to assign schedule";
       }
   
-      const confirmResult = await RequestManagerModel.confirmSchedule(request_id);
+      const assignResult = await RequestManagerModel.assignSchedule(request_id, schedule_date, time_slot);
   
       res.status(200).json(
         ResponseGenerator.Success(
-          "Visitation Schedule Confirmed Successfully",
-          confirmResult
+          "Visitation Schedule Assigned Successfully",
+          assignResult
         )
       );
     } catch (error) {
@@ -259,15 +255,15 @@ const RequestManagerController = {
 
   Invoice: async (req, res) => {
     try {
-      const { request_id, client_id, amount } = req.body;
+      const { request_id } = req.body;
 
-      if ((!request_id && !client_id) || !amount) {
+      if (!request_id) {
         return res
           .status(400)
-          .json(ResponseGenerator.Error("request_id atau client_id dan amount diperlukan", {}));
+          .json(ResponseGenerator.Error("request_id diperlukan", {}));
       }
 
-      const request = await RequestManagerModel.getById(request_id).then(({ rows }) => rows[0]);      
+      const request = await InvoiceModel.getRequestWithPackage(request_id);
       if (!request) {
         return res
           .status(400)
@@ -283,17 +279,18 @@ const RequestManagerController = {
         );
       }
 
-      const invoice = await InvoiceModel.createInvoice({ request_id, client_id, amount });
+      const amount = request.unit_price || 0; 
+
+      const invoice = await InvoiceModel.createInvoice({ request_id, amount });
 
       const doc = new PDFDocument();
-
       const invoiceDir = path.join(__dirname, "..", "uploads", "invoices");
+      
       if (!fs.existsSync(invoiceDir)) {
         fs.mkdirSync(invoiceDir, { recursive: true });
       }
 
       const pdfPath = path.join(invoiceDir, `${invoice.invoice_number}.pdf`);
-
       const writeStream = fs.createWriteStream(pdfPath);
       doc.pipe(writeStream);
 
@@ -301,8 +298,7 @@ const RequestManagerController = {
       doc.moveDown();
       doc.fontSize(12).text(`Invoice Number: ${invoice.invoice_number}`);
       doc.text(`Request ID: ${request_id || "-"}`);
-      doc.text(`Client ID: ${client_id || "-"}`);
-      doc.text(`Amount: Rp ${invoice.amount.toFixed(2)}`);
+      doc.text(`Amount: USD ${invoice.amount.toFixed(2)}`);
       doc.text(`Status: ${invoice.status}`);
       doc.text(`Generated At: ${moment().format("YYYY-MM-DD HH:mm:ss")}`); 
 
@@ -349,8 +345,9 @@ const RequestManagerController = {
       await proofPaymentFile.mv(paymentPath);
 
       let completeResult = await RequestManagerModel.completeInstallation(request_id, installationPath, paymentPath);
+      let client = await RequestManagerModel.clientData(request_id);
 
-      res.status(200).json(ResponseGenerator.Success("Installation Completed Successfully", completeResult));
+      res.status(200).json(ResponseGenerator.Success("Installation Completed Successfully", completeResult, client));
     } catch (error) {
       console.warn("error :", error);
       res.status(400).json(ResponseGenerator.Error(error.toString(), error));
@@ -360,15 +357,16 @@ const RequestManagerController = {
   Reallocate: async (req, res) => {
     try {
       let { request_id, reallocateType } = req.body;
-
+      
       let reallocateResult = await RequestManagerModel.reallocateProducts(request_id, reallocateType);
-
+  
       res.status(200).json(ResponseGenerator.Success(reallocateResult, "Reallocation Successful"));
     } catch (error) {
       console.warn("error :", error);
       res.status(400).json(ResponseGenerator.Error(error.toString(), error));
     }
-  },
+  }
+  
 };
 
 module.exports = RequestManagerController;

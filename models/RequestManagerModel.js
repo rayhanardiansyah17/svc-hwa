@@ -16,12 +16,11 @@ const RequestManagerModel = {
       sub: "required",
       suco: "required",
       aldeia: "required",
+      coverage_status: "required",
       email: "required|email",
       msisdn: "required",
       product: "required|in:GPON,HWA",
-      initial_paket: "required",
-      visitation_schedule_date: "required|date",
-      visitation_schedule_time_slot: "required|in:09:00-12:00,12:00-15:00,15:00-18:00",
+      initial_paket: "required"
     },
   },
 
@@ -101,6 +100,7 @@ const RequestManagerModel = {
           sub: data.sub,
           suco: data.suco,
           aldeia: data.aldeia,
+          coverage_status: data.coverage_status,
           email: data.email,
           msisdn: data.msisdn,
           msisdn_alternatif: data.msisdn_alternatif || null,
@@ -168,8 +168,7 @@ const RequestManagerModel = {
             ir.*, 
             pl.name as sf_plaza_name,
             hpa.modem_sn,
-            hpa.sim_sn,
-            hpa.package_id
+            hpa.sim_sn
           FROM 
             hwa_requests ir
           LEFT JOIN 
@@ -266,35 +265,35 @@ const RequestManagerModel = {
         }
         const request = requestResult[0];
   
-        const modem = await ProductAllocationModel.getAvailableDevice("Mifi");
-        if (!modem) {
-          throw "No Available Mifi";
-        }
-  
-        const simcard = await ProductAllocationModel.getAvailableSimcard();
-        if (!simcard) {
-          throw "No Available Simcard";
-        }
-  
-        const package = await ProductAllocationModel.getPackageById(request.initial_paket);
-        if (!package) {
+        const selectedPackage = await ProductAllocationModel.getPackageById(request.initial_paket);
+        if (!selectedPackage) {
           throw "Package Not Found";
         }
-
+  
+        const modem = await ProductAllocationModel.getAvailableDevice(selectedPackage.device_parent);
+        const simcard = await ProductAllocationModel.getAvailableSimcard(selectedPackage.simcard_parent);
+  
+        if (!modem) {
+          throw "No Available Device for " + selectedPackage.device_parent;
+        }
+        if (!simcard) {
+          throw "No Available Simcard for " + selectedPackage.simcard_parent;
+        }
+  
         await ProductAllocationModel.updateDeviceStatus(modem.id, "SOLD", requestId);
-  
         await ProductAllocationModel.updateSimcardStatus(simcard.id, "SOLD", requestId);
-  
-        const allocationData = {
+
+          const allocationData = {
           request_id: requestId,
           modem_sn: modem.serial_number,
           sim_sn: simcard.iccid,
-          package_id: package.id,
           allocated_at: moment().format("YYYY-MM-DD HH:mm:ss"),
         };
+  
         const columns = Object.keys(allocationData).join(", ");
         const placeholders = Object.keys(allocationData).map(() => "?").join(", ");
         const values = Object.values(allocationData);
+  
         const allocationQuery = `INSERT INTO hwa_product_allocations (${columns}) VALUES (${placeholders})`;
         await mysqlHelpers.query(db, allocationQuery, values);
   
@@ -311,25 +310,30 @@ const RequestManagerModel = {
         resolve({
           modem_sn: modem.serial_number,
           sim_sn: simcard.iccid,
-          package_id: package.id,
         });
       } catch (error) {
         reject(error);
       }
     });
-  },
-  
+  },  
 
   clientData: async (requestId) => {
     return new Promise(async (resolve, reject) => {
       try {
         const requestQuery = `
-          SELECT * FROM hwa_requests WHERE request_id = ?
+          SELECT 
+          hr.*,
+          hp.validity 
+          FROM hwa_requests hr 
+          LEFT JOIN
+          hwa_packages hp ON hp.refill_id = hr.initial_paket 
+          WHERE request_id = ?
         `;
         const requestResult = await mysqlHelpers.query(db, requestQuery, [requestId]);
         if (requestResult.length === 0) throw "Request Not Found";
 
         const request = requestResult[0];
+        const terminationDate = moment().add(request.validity, 'days').format("YYYY-MM-DD");
 
         const clientData = {
           request_id: request.request_id,
@@ -344,9 +348,9 @@ const RequestManagerModel = {
           msisdn: request.msisdn,
           msisdn_alternatif: request.msisdn_alternatif,
           product: request.product,
-          initial_paket: request.initial_paket,
-          status: "INACTIVE",
-          termination_date: null,
+          package: request.initial_paket,
+          status: "ACTIVE",
+          termination_date: terminationDate,
           created_at: moment().format("YYYY-MM-DD HH:mm:ss"),
         };
 
@@ -388,31 +392,33 @@ const RequestManagerModel = {
     });
   },
 
-  confirmSchedule: async (requestId) => {
+  assignSchedule: async (requestId, scheduleDate, timeSlot) => {
     return new Promise(async (resolve, reject) => {
       try {
-        const requestQuery = `
-          SELECT * FROM hwa_requests 
-          WHERE request_id = ? AND status = 'ASSIGNED'
-        `;
-        const requestResult = await mysql_helpers.query(db, requestQuery, [requestId]);
+        const requestQuery = 
+          `SELECT * FROM hwa_requests 
+           WHERE request_id = ? AND status = 'ASSIGNED';`;
+        const requestResult = await mysqlHelpers.query(db, requestQuery, [requestId]);
+  
         if (requestResult.length === 0) {
           throw "Request not assigned or not found";
         }
   
-        const confirmQuery = `
-          UPDATE hwa_requests 
-          SET visitation_schedule_confirmed = 1, 
-              status = 'SCHEDULED', 
-              updated_at = ?
-          WHERE request_id = ?
-        `;
-        await mysql_helpers.query(db, confirmQuery, [
+        const assignQuery = 
+          `UPDATE hwa_requests 
+           SET visitation_schedule_date = ?, 
+               visitation_schedule_time_slot = ?, 
+               status = 'SCHEDULED', 
+               updated_at = ?
+           WHERE request_id = ?;`;
+        await mysqlHelpers.query(db, assignQuery, [
+          scheduleDate,
+          timeSlot,
           moment().format("YYYY-MM-DD HH:mm:ss"),
           requestId,
         ]);
   
-        resolve("Visitation Schedule Confirmed Successfully");
+        resolve("Visitation Schedule Assigned Successfully");
       } catch (error) {
         reject(error);
       }
@@ -465,10 +471,12 @@ const RequestManagerModel = {
     return new Promise(async (resolve, reject) => {
       try {
         const scheduleQuery = `
-          SELECT * FROM hwa_requests WHERE request_id = ? AND visitation_schedule_confirmed = 1
+          SELECT * FROM hwa_requests WHERE request_id = ? 
+          AND visitation_schedule_date IS NOT NULL 
+          AND visitation_schedule_time_slot IS NOT NULL
         `;
         const scheduleResult = await mysqlHelpers.query(db, scheduleQuery, [requestId]);
-        if (scheduleResult.length === 0) throw "Visitation Schedule Not Confirmed";
+        if (scheduleResult.length === 0) throw "Visitation Schedule Not Assigned";
 
         const updateProofQuery = `
           UPDATE hwa_requests 
@@ -509,73 +517,94 @@ const RequestManagerModel = {
           SELECT * FROM hwa_product_allocations WHERE request_id = ?
         `;
         const allocationResult = await mysqlHelpers.query(db, allocationQuery, [requestId]);
-        if (allocationResult.length === 0) throw "No Allocation Found";
-
-        const allocation = allocationResult[0];
-
-        const modem = await ProductAllocationModel.getAvailableDevice("Mifi");
-        if (!modem && (reallocateType === "Mifi" || reallocateType === "both")) {
-          throw "No Available Mifi";
-        }
-
-        const simcard = await ProductAllocationModel.getAvailableSimcard();
-        if (!simcard && (reallocateType === "Simcard" || reallocateType === "both")) {
-          throw "No Available Simcard";
-        }
-        
-        if (reallocateType === "Mifi" || reallocateType === "both") {
-          await this.updateDeviceStatusBySN(allocation.modem_sn, "UNAVAILABLE", null);
+  
+        if (allocationResult.length === 0) {
+          throw "No Allocation Found for this Request";
         }
   
-        if (reallocateType === "Simcard" || reallocateType === "both") {
-          await this.updateSimcardStatusBySN(allocation.sim_sn, "UNAVAILABLE", null);
+        const previousAllocation = allocationResult[0];
+  
+        if (reallocateType === 'device' || reallocateType === 'both') {
+          await ProductAllocationModel.updateDeviceStatusBySN(previousAllocation.modem_sn, "UNAVAILABLE");
         }
-
-        const deleteQuery = `
+  
+        if (reallocateType === 'sim' || reallocateType === 'both') {
+          await ProductAllocationModel.updateSimcardStatusBySN(previousAllocation.sim_sn, "UNAVAILABLE");
+        }
+  
+        const deleteAllocationQuery = `
           DELETE FROM hwa_product_allocations WHERE request_id = ?
         `;
-        await mysqlHelpers.query(db, deleteQuery, [requestId]);
-
-        await RequestManagerModel.allocateProducts(requestId);
-
-        resolve("Reallocation Successful");
+        await mysqlHelpers.query(db, deleteAllocationQuery, [requestId]);
+  
+        const requestQuery = `
+          SELECT * FROM hwa_requests WHERE request_id = ?
+        `;
+        const requestResult = await mysqlHelpers.query(db, requestQuery, [requestId]);
+  
+        if (requestResult.length === 0) {
+          throw "Request Not Found";
+        }
+  
+        const request = requestResult[0];
+  
+        const selectedPackage = await ProductAllocationModel.getPackageById(request.initial_paket);
+        if (!selectedPackage) {
+          throw "Package Not Found";
+        }
+  
+        let modem = null;
+        let simcard = null;
+  
+        if (reallocateType === 'device' || reallocateType === 'both') {
+          modem = await ProductAllocationModel.getAvailableDevice(selectedPackage.device_parent);
+          if (!modem) {
+            throw "No Available Device for " + selectedPackage.device_parent;
+          }
+          await ProductAllocationModel.updateDeviceStatusBySN(modem.serial_number, "SOLD");
+        }
+  
+        if (reallocateType === 'sim' || reallocateType === 'both') {
+          simcard = await ProductAllocationModel.getAvailableSimcard(selectedPackage.simcard_parent);
+          if (!simcard) {
+            throw "No Available Simcard for " + selectedPackage.simcard_parent;
+          }
+          await ProductAllocationModel.updateSimcardStatusBySN(simcard.iccid, "SOLD");
+        }
+  
+        const allocationData = {
+          request_id: requestId,
+          modem_sn: modem ? modem.serial_number : previousAllocation.modem_sn,
+          sim_sn: simcard ? simcard.iccid : previousAllocation.sim_sn,
+          allocated_at: moment().format("YYYY-MM-DD HH:mm:ss"),
+        };
+  
+        const columns = Object.keys(allocationData).join(", ");
+        const placeholders = Object.keys(allocationData).map(() => "?").join(", ");
+        const values = Object.values(allocationData);
+  
+        const newAllocationQuery = `INSERT INTO hwa_product_allocations (${columns}) VALUES (${placeholders})`;
+        await mysqlHelpers.query(db, newAllocationQuery, values);
+  
+        const updateStatusQuery = `
+          UPDATE hwa_requests 
+          SET status = 'ALLOCATED', updated_at = ?
+          WHERE request_id = ?
+        `;
+        await mysqlHelpers.query(db, updateStatusQuery, [
+          moment().format("YYYY-MM-DD HH:mm:ss"),
+          requestId,
+        ]);
+  
+        resolve({
+          modem_sn: modem ? modem.serial_number : previousAllocation.modem_sn,
+          sim_sn: simcard ? simcard.iccid : previousAllocation.sim_sn,
+        });
       } catch (error) {
         reject(error);
       }
     });
-  },
-
-  updateDeviceStatusBySN: async (serialNumber, status, purchaseOrderCode) => {
-    const updateData = {
-      status: status,
-      purchase_order_code: purchaseOrderCode,
-      updated_at: moment().format("YYYY-MM-DD HH:mm:ss"),
-    };
-
-    const columns = Object.keys(updateData).map((key) => `${key} = ?`).join(", ");
-    const values = Object.values(updateData);
-    values.push(serialNumber);
-
-    const query = `UPDATE devices SET ${columns} WHERE serial_number = ?`;
-
-    return await mysqlHelpers.query(db, query, values);
-  },
-
-  updateSimcardStatusBySN: async (simSn, status, purchaseOrderCode) => {
-    const updateData = {
-      status: status,
-      sbp_po_code: purchaseOrderCode,
-      updated_at: moment().format("YYYY-MM-DD HH:mm:ss"),
-    };
-
-    const columns = Object.keys(updateData).map((key) => `${key} = ?`).join(", ");
-    const values = Object.values(updateData);
-    values.push(simSn);
-
-    const query = `UPDATE simcard SET ${columns} WHERE iccid = ?`;
-
-    return await mysqlHelpers.query(db, query, values);
-  },
+  }  
 };
 
 module.exports = RequestManagerModel;

@@ -11,7 +11,6 @@ const InvoiceModel = {
       const insertData = {
         invoice_number: invoiceNumber,
         request_id: data.request_id || null,
-        client_id: data.client_id || null,
         amount: data.amount,
         status: "GENERATED",
         generated_at: moment().format("YYYY-MM-DD HH:mm:ss"),
@@ -30,6 +29,24 @@ const InvoiceModel = {
         amount: data.amount,
         status: "GENERATED",
       };
+    } catch (error) {
+      throw error;
+    }
+  },
+
+  getRequestWithPackage: async (requestId) => {
+    const query = `
+      SELECT 
+        hr.*, 
+        hp.unit_price  
+      FROM hwa_requests hr 
+      LEFT JOIN hwa_packages hp ON hp.refill_id = hr.initial_paket 
+      WHERE hr.request_id = ?
+    `;
+  
+    try {
+      const result = await mysqlHelpers.query(db, query, [requestId]);
+      return result.length > 0 ? result[0] : null;  
     } catch (error) {
       throw error;
     }

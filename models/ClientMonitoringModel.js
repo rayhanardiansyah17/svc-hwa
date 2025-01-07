@@ -38,10 +38,9 @@ const ClientMonitoringModel = {
 
         let query = `
           SELECT 
-            hc.*, 
+            hc.*
           FROM 
             hwa_clients hc
-          LEFT JOIN 
           ${queryFilter}
           ORDER BY hc.id DESC
         `;
@@ -115,8 +114,7 @@ const ClientMonitoringModel = {
           SELECT 
             hc.*, 
             hpa.modem_sn,
-            hpa.sim_sn,
-            hpa.package_id 
+            hpa.sim_sn
           FROM 
             hwa_clients hc 
           LEFT JOIN 
